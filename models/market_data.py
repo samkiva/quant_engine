@@ -1,12 +1,16 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 
 
 @dataclass(frozen=True)
 class TradeEvent:
     """
     Immutable representation of a single Binance trade stream event.
-    Raw market data is a historical fact — it must not be mutated.
+
+    buyer_order_id and seller_order_id are Optional — Binance removed
+    these fields from the trade stream. Defensive parsing with defaults
+    ensures the model survives external API schema changes.
     """
     event_type: str
     event_time: datetime
@@ -14,10 +18,10 @@ class TradeEvent:
     trade_id: int
     price: float
     quantity: float
-    buyer_order_id: int
-    seller_order_id: int
     trade_time: datetime
     is_buyer_maker: bool
+    buyer_order_id: Optional[int] = None
+    seller_order_id: Optional[int] = None
 
     @classmethod
     def from_binance_message(cls, msg: dict) -> "TradeEvent":
@@ -28,8 +32,8 @@ class TradeEvent:
             trade_id=msg["t"],
             price=float(msg["p"]),
             quantity=float(msg["q"]),
-            buyer_order_id=msg["b"],
-            seller_order_id=msg["a"],
             trade_time=datetime.utcfromtimestamp(msg["T"] / 1000),
             is_buyer_maker=msg["m"],
+            buyer_order_id=msg.get("b"),
+            seller_order_id=msg.get("a"),
         )
