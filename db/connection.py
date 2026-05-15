@@ -11,12 +11,17 @@ async def init_db_pool() -> None:
     global _pool
     _pool = await asyncpg.create_pool(
         dsn=settings.database_url,
-        min_size=2,
-        max_size=10,
+        min_size=settings.db_pool_min_size,
+        max_size=settings.db_pool_max_size,
         command_timeout=30,
-        statement_cache_size=0,  # Required for PgBouncer transaction mode
+        statement_cache_size=0,
     )
-    logger.info("db_pool_created", min_size=2, max_size=10)
+    logger.info(
+        "db_pool_created",
+        min_size=settings.db_pool_min_size,
+        max_size=settings.db_pool_max_size,
+        environment=settings.environment,
+    )
 
 
 async def close_db_pool() -> None:
