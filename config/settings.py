@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     binance_ws_testnet_url: str
     binance_api_key: str
     binance_secret_key: str
+    database_url: str
+    redis_url: str
     log_level: str = "INFO"
     environment: str = "development"
 
