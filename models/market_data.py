@@ -1,5 +1,5 @@
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -27,12 +27,12 @@ class TradeEvent:
     def from_binance_message(cls, msg: dict) -> "TradeEvent":
         return cls(
             event_type=msg["e"],
-            event_time=datetime.utcfromtimestamp(msg["E"] / 1000),
+            event_time=datetime.fromtimestamp(msg["E"] / 1000, tz=timezone.utc),
             symbol=msg["s"],
             trade_id=msg["t"],
             price=float(msg["p"]),
             quantity=float(msg["q"]),
-            trade_time=datetime.utcfromtimestamp(msg["T"] / 1000),
+            trade_time=datetime.fromtimestamp(msg["T"] / 1000, tz=timezone.utc),
             is_buyer_maker=msg["m"],
             buyer_order_id=msg.get("b"),
             seller_order_id=msg.get("a"),
