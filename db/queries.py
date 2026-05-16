@@ -53,3 +53,29 @@ async def insert_trade(event: TradeEvent) -> None:
             event.trade_time,
             event.event_time,
         )
+
+
+async def get_session_summary(symbol: str) -> list[dict]:
+    """
+    Returns all recorded stream sessions for a symbol.
+    Use this to identify gaps in tick data coverage.
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                id,
+                connected_at,
+                disconnected_at,
+                disconnect_reason,
+                trades_received,
+                is_clean_close,
+                EXTRACT(EPOCH FROM (
+                    COALESCE(disconnected_at, NOW()) - connected_at
+                ))::INTEGER AS duration_seconds
+            FROM stream_sessions
+            WHERE symbol = $1
+            ORDER BY connected_at DESC
+            LIMIT 20
+        """, symbol)
+    return [dict(r) for r in rows]
