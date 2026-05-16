@@ -5,6 +5,7 @@ from db.connection import init_db_pool, close_db_pool
 from cache.redis_client import init_redis, close_redis
 from api.routes.health import router as health_router
 from api.routes.market import router as market_router
+from api.routes.paper import router as paper_router
 
 configure_logging()
 
@@ -20,9 +21,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Quant Engine",
-    version="0.2.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(market_router, prefix="/api/v1")
+app.include_router(paper_router, prefix="/api/v1")
