@@ -19,7 +19,7 @@ MAINNET_URL = settings.binance_ws_mainnet_url
 async def main() -> None:
     await init_db_pool()
     await init_redis()
-    await start_write_worker()
+    await start_write_worker(max_size=10_000)
 
     session_id = await record_connect(f"MAINNET_{SYMBOL}")
     handler = MainnetTradeHandler()

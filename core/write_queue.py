@@ -177,7 +177,7 @@ async def _worker() -> None:
             batch = []
 
 
-async def start_write_worker() -> None:
+async def start_write_worker(max_size: int = _QUEUE_MAX_SIZE) -> None:
     """
     Creates the Queue and starts the background worker.
     Must be called from within a running event loop.
@@ -185,7 +185,7 @@ async def start_write_worker() -> None:
     to ensure it belongs to the active event loop.
     """
     global _queue, _worker_task
-    _queue = asyncio.Queue(maxsize=_QUEUE_MAX_SIZE)
+    _queue = asyncio.Queue(maxsize=max_size)
     _worker_task = asyncio.create_task(_worker(), name="write_queue_worker")
     # Yield to event loop so worker starts and logs before we return
     await asyncio.sleep(0)
