@@ -6,21 +6,20 @@ from backtesting.portfolio import Portfolio
 from backtesting.metrics import BacktestMetrics, compute_metrics
 from paper_trading.signal_logger import log_signal
 from paper_trading.risk_layer import RiskLayer
+from core.portfolio_state_log import record_portfolio_state
 
 logger = structlog.get_logger()
 
 
 class PaperEngine:
     """
-    Live paper trading engine. Processes ticks from any DataSource,
-    applies risk controls, logs every signal, and tracks simulated P&L.
+    Live paper trading engine with decoupled persistence.
 
-    Differences from BacktestEngine:
-    - Every signal is logged to PostgreSQL with latency measurement
-    - Risk layer sits between strategy and portfolio
-    - Reconnect events are forwarded to the risk layer
-    - Post-reconnect signals are flagged in the signal log
-    - Periodic P&L reporting to logs for observability
+    Signal path (synchronous, latency-critical):
+    tick → strategy → risk gate → portfolio → state enqueue
+
+    Persistence path (async, background worker):
+    write queue → bulk DB inserts every 100ms
     """
 
     def __init__(
@@ -44,7 +43,6 @@ class PaperEngine:
         self._tick_count: int = 0
         self._post_reconnect: bool = False
 
-        # Register reconnect callback if datasource supports it
         if hasattr(datasource, "on_reconnect"):
             datasource.on_reconnect(self._on_reconnect)
 
@@ -60,17 +58,22 @@ class PaperEngine:
             session_id=self._session_id,
         )
 
+        # Record initial portfolio state
+        record_portfolio_state(
+            self._portfolio, 0.0,
+            self._session_id, "startup"
+        )
+
         async for tick in self._datasource.stream():
             generated_at = datetime.now(tz=timezone.utc)
             signal = self._strategy.on_tick(tick)
 
-            # Risk check
             allowed, check_reason = self._risk.check(signal, tick.price)
             risk_blocked = not allowed
 
-            # Only log non-HOLD signals or blocked signals
+            # Log all non-HOLD signals — synchronous, non-blocking
             if signal.signal != Signal.HOLD or risk_blocked:
-                await log_signal(
+                log_signal(
                     signal=signal,
                     strategy_name=self._strategy_name,
                     generated_at=generated_at,
@@ -80,11 +83,19 @@ class PaperEngine:
                     block_reason=check_reason if risk_blocked else None,
                 )
 
-            # Execute signal if risk-approved
             if allowed:
                 self._portfolio.on_signal(signal)
 
-            # Reset post-reconnect flag after first tick processed
+                # Record state after every execution — non-blocking
+                if signal.signal != Signal.HOLD:
+                    cause = (
+                        f"{signal.signal.value.lower()}_executed"
+                    )
+                    record_portfolio_state(
+                        self._portfolio, tick.price,
+                        self._session_id, cause
+                    )
+
             self._post_reconnect = False
 
             portfolio_value = self._portfolio.current_value(tick.price)

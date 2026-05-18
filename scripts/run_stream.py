@@ -1,5 +1,6 @@
 import asyncio
 from core.logging_setup import configure_logging
+from core.write_queue import start_write_worker, stop_write_worker
 from db.connection import init_db_pool, close_db_pool
 from db.queries import ensure_schema
 from cache.redis_client import init_redis, close_redis
@@ -13,6 +14,7 @@ configure_logging()
 async def main() -> None:
     await init_db_pool()
     await init_redis()
+    await start_write_worker()
     await ensure_schema()
 
     buffer = TradeBuffer()
@@ -24,6 +26,7 @@ async def main() -> None:
             on_message=handler.handle,
         )
     finally:
+        await stop_write_worker()
         await close_db_pool()
         await close_redis()
 

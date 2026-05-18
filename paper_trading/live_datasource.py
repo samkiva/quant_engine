@@ -15,24 +15,12 @@ BACKOFF_MULTIPLIER: float = 2.0
 
 
 class LiveDataSource(DataSource):
-    """
-    Implements the DataSource interface backed by a live WebSocket stream.
-
-    This is the key architectural validation: the paper trading engine
-    uses the identical DataSource ABC as the backtesting engine.
-    Swapping PostgresDataSource for LiveDataSource is the only change
-    needed to go from historical replay to live operation.
-
-    Emits reconnect events so the paper engine can notify the risk layer.
-    """
-
     def __init__(self, symbol: str) -> None:
         self._symbol = symbol
         self._reconnect_callbacks: list = []
         self._tick_count: int = 0
 
     def on_reconnect(self, callback) -> None:
-        """Register a callback to be called on every reconnect."""
         self._reconnect_callbacks.append(callback)
 
     async def _notify_reconnect(self) -> None:
@@ -41,7 +29,6 @@ class LiveDataSource(DataSource):
             await cb(now)
 
     async def count(self) -> int:
-        """Live source has no fixed count — returns ticks seen so far."""
         return self._tick_count
 
     async def stream(self) -> AsyncIterator[Tick]:
@@ -53,11 +40,7 @@ class LiveDataSource(DataSource):
         while True:
             try:
                 if not first_connect:
-                    logger.info(
-                        "live_ds_reconnecting",
-                        symbol=self._symbol,
-                        retry_delay=retry_delay,
-                    )
+                    logger.info("live_ds_reconnecting", symbol=self._symbol)
                     await self._notify_reconnect()
 
                 async with websockets.connect(
@@ -71,17 +54,16 @@ class LiveDataSource(DataSource):
                     logger.info("live_ds_connected", symbol=self._symbol)
 
                     async for raw_message in ws:
+                        # Stamp received_at immediately on WebSocket receive
+                        received_at = datetime.now(tz=timezone.utc)
                         try:
                             data = json.loads(raw_message)
-                            tick = self._parse_tick(data)
+                            tick = self._parse_tick(data, received_at)
                             if tick:
                                 self._tick_count += 1
                                 yield tick
                         except Exception as e:
-                            logger.error(
-                                "live_ds_parse_error",
-                                error=str(e),
-                            )
+                            logger.error("live_ds_parse_error", error=str(e))
 
             except websockets.exceptions.ConnectionClosedOK:
                 logger.info("live_ds_closed_cleanly")
@@ -101,7 +83,7 @@ class LiveDataSource(DataSource):
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * BACKOFF_MULTIPLIER, MAX_RETRY_DELAY)
 
-    def _parse_tick(self, msg: dict) -> Tick | None:
+    def _parse_tick(self, msg: dict, received_at: datetime) -> Tick | None:
         try:
             return Tick(
                 timestamp=datetime.fromtimestamp(
@@ -111,6 +93,7 @@ class LiveDataSource(DataSource):
                 price=float(msg["p"]),
                 quantity=float(msg["q"]),
                 is_buyer_maker=msg["m"],
+                received_at=received_at,
             )
         except KeyError:
             return None

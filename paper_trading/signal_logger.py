@@ -1,12 +1,12 @@
 from datetime import datetime, timezone
 import structlog
-from db.connection import get_pool
 from backtesting.strategy import StrategySignal
+from core.write_queue import enqueue
 
 logger = structlog.get_logger()
 
 
-async def log_signal(
+def log_signal(
     signal: StrategySignal,
     strategy_name: str,
     generated_at: datetime,
@@ -16,52 +16,45 @@ async def log_signal(
     block_reason: str | None = None,
 ) -> None:
     """
-    Persists every signal decision to the signal_log table.
-    Records both executed and risk-blocked signals — the audit trail
-    must be complete regardless of whether a signal was acted upon.
+    Enqueues a signal record. Uses received_at for latency measurement
+    to eliminate clock skew between local clock and Binance server clock.
 
-    latency_ms measures the delay between when the tick occurred on
-    Binance's servers (tick_timestamp) and when our strategy generated
-    a signal (generated_at). This is end-to-end pipeline latency.
+    processing_latency = generated_at - received_at (both local clock)
+    clock_skew = received_at - tick.timestamp (local vs server)
     """
     tick = signal.tick
-    latency_ms = (
-        (generated_at - tick.timestamp).total_seconds() * 1000
+
+    # True processing latency — local clock only, immune to clock skew
+    processing_latency_ms = (
+        (generated_at - tick.received_at).total_seconds() * 1000
     )
 
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO signal_log (
-                strategy_name, symbol, signal,
-                tick_price, tick_timestamp, generated_at,
-                latency_ms, reason, risk_blocked, block_reason,
-                session_id, post_reconnect
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6,
-                $7, $8, $9, $10, $11, $12
-            )
-        """,
-            strategy_name,
-            tick.symbol,
-            signal.signal.value,
-            tick.price,
-            tick.timestamp,
-            generated_at,
-            round(latency_ms, 3),
-            signal.reason,
-            risk_blocked,
-            block_reason,
-            session_id,
-            post_reconnect,
-        )
+    # Clock skew measurement — informational only
+    clock_skew_ms = (
+        (tick.received_at - tick.timestamp).total_seconds() * 1000
+    )
+
+    enqueue("signal", {
+        "strategy_name": strategy_name,
+        "symbol": tick.symbol,
+        "signal": signal.signal.value,
+        "tick_price": tick.price,
+        "tick_timestamp": tick.timestamp,
+        "generated_at": generated_at,
+        "latency_ms": round(processing_latency_ms, 3),
+        "reason": signal.reason,
+        "risk_blocked": risk_blocked,
+        "block_reason": block_reason,
+        "session_id": session_id,
+        "post_reconnect": post_reconnect,
+    })
 
     logger.debug(
-        "signal_logged",
+        "signal_enqueued",
         strategy=strategy_name,
         signal=signal.signal.value,
         price=tick.price,
-        latency_ms=round(latency_ms, 1),
+        processing_latency_ms=round(processing_latency_ms, 1),
+        clock_skew_ms=round(clock_skew_ms, 1),
         risk_blocked=risk_blocked,
-        post_reconnect=post_reconnect,
     )

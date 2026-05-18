@@ -1,5 +1,6 @@
 import asyncio
 from core.logging_setup import configure_logging
+from core.write_queue import start_write_worker, stop_write_worker
 from db.connection import init_db_pool, close_db_pool
 from db.session_tracker import record_connect, record_disconnect
 from cache.redis_client import init_redis, close_redis
@@ -19,6 +20,7 @@ STRATEGY_NAME = "vwap_cross_v1"
 async def main() -> None:
     await init_db_pool()
     await init_redis()
+    await start_write_worker()
 
     session_id = await record_connect(SYMBOL)
 
@@ -67,6 +69,7 @@ async def main() -> None:
             reason="paper_session_ended",
             is_clean=True,
         )
+        await stop_write_worker()
         await close_db_pool()
         await close_redis()
 
