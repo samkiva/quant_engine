@@ -32,10 +32,11 @@ async def main() -> None:
     )
     try:
         from notifications.telegram_notifier import notifier
-        notifier.notify(
+        await notifier._send(
             f"\U0001f7e2 quant_engine\n"
             f"mainnet collection started\n"
-            f"symbol={SYMBOL}"
+            f"symbol={SYMBOL}\n"
+            f"queue_capacity=10,000"
         )
     except Exception:
         pass

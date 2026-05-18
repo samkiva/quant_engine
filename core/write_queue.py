@@ -48,9 +48,10 @@ def enqueue(event_type: str, payload: dict) -> None:
 
 
 def get_queue_stats() -> dict:
+    actual_capacity = _queue.maxsize if _queue else _QUEUE_MAX_SIZE
     return {
         "queue_size": _queue.qsize() if _queue else 0,
-        "queue_capacity": _QUEUE_MAX_SIZE,
+        "queue_capacity": actual_capacity,
         "dropped_events": _dropped_count,
         "flushed_events": _flushed_count,
     }
@@ -143,7 +144,7 @@ async def _insert_portfolio_states(pool, events: list[dict]) -> None:
 
 async def _worker() -> None:
     assert _queue is not None, "Queue must be initialized before worker starts"
-    logger.info("write_queue_worker_started", capacity=_QUEUE_MAX_SIZE)
+    logger.info("write_queue_worker_started", capacity=_queue.maxsize)
     batch = []
 
     while True:
