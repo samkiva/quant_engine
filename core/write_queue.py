@@ -35,6 +35,16 @@ def enqueue(event_type: str, payload: dict) -> None:
             event_type=event_type,
             total_dropped=_dropped_count,
         )
+        if _dropped_count % 1000 == 0:
+            try:
+                from notifications.telegram_notifier import notifier
+                notifier.notify(
+                    f"\u26a0\ufe0f quant_engine\n"
+                    f"queue overflow\n"
+                    f"dropped={_dropped_count:,} events"
+                )
+            except Exception:
+                pass
 
 
 def get_queue_stats() -> dict:

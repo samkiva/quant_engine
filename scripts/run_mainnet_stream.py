@@ -30,6 +30,15 @@ async def main() -> None:
         url=MAINNET_URL,
         note="passive collection only — no trading",
     )
+    try:
+        from notifications.telegram_notifier import notifier
+        notifier.notify(
+            f"\U0001f7e2 quant_engine\n"
+            f"mainnet collection started\n"
+            f"symbol={SYMBOL}"
+        )
+    except Exception:
+        pass
 
     trades_received = 0
     try:

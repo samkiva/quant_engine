@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     db_pool_max_size: int = 3
 
     redis_url: str
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     log_level: str = "INFO"
 
