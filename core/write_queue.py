@@ -53,6 +53,7 @@ async def _flush_batch(batch: list[dict]) -> None:
     trade_events = [e for e in batch if e["event_type"] == "trade"]
     signal_events = [e for e in batch if e["event_type"] == "signal"]
     portfolio_events = [e for e in batch if e["event_type"] == "portfolio_state"]
+    mainnet_events = [e for e in batch if e["event_type"] == "mainnet_trade"]
 
     pool = get_pool()
 
@@ -62,6 +63,8 @@ async def _flush_batch(batch: list[dict]) -> None:
         await _insert_signals(pool, signal_events)
     if portfolio_events:
         await _insert_portfolio_states(pool, portfolio_events)
+    if mainnet_events:
+        await _insert_mainnet_trades(pool, mainnet_events)
 
     global _flushed_count
     _flushed_count += len(batch)
@@ -71,6 +74,7 @@ async def _flush_batch(batch: list[dict]) -> None:
         trades=len(trade_events),
         signals=len(signal_events),
         portfolio_states=len(portfolio_events),
+        mainnet_trades=len(mainnet_events),
         total_flushed=_flushed_count,
     )
 
@@ -199,3 +203,19 @@ async def stop_write_worker() -> None:
         exc = _worker_task.exception()
         if exc:
             logger.error("write_queue_worker_exception", error=str(exc))
+
+
+async def _insert_mainnet_trades(pool, events: list[dict]) -> None:
+    async with pool.acquire() as conn:
+        for e in events:
+            r = e["payload"]
+            await conn.execute("""
+                INSERT INTO mainnet_trades (
+                    trade_id, symbol, price, quantity,
+                    is_buyer_maker, trade_time, event_time
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (symbol, trade_id) DO NOTHING
+            """,
+                r["trade_id"], r["symbol"], r["price"], r["quantity"],
+                r["is_buyer_maker"], r["trade_time"], r["event_time"],
+            )
