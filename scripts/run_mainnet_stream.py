@@ -31,14 +31,14 @@ async def main() -> None:
         note="passive collection only — no trading",
     )
     try:
-        from notifications.telegram_notifier import notifier
-        await notifier._send(
-            f"\U0001f7e2 quant_engine\n"
-            f"mainnet collection started\n"
-            f"symbol={SYMBOL}\n"
-            f"queue_capacity=10,000"
+        from telegram import Bot
+        from config.settings import settings
+        _tg = Bot(token=settings.telegram_bot_token)
+        await _tg.send_message(
+            chat_id=settings.telegram_chat_id,
+            text=f"\U0001f7e2 quant_engine\nmainnet started\n{SYMBOL}"
         )
-    except Exception:
+    except Exception as e:
         pass
 
     trades_received = 0
