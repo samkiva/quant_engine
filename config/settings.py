@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     redis_url: str
     telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
+    telegram_chat_id: int | str = ""
 
     log_level: str = "INFO"
 
