@@ -68,7 +68,8 @@ class PaperEngine:
             generated_at = datetime.now(tz=timezone.utc)
             signal = self._strategy.on_tick(tick)
 
-            allowed, check_reason = self._risk.check(signal, tick.price)
+            decision = self._risk.evaluate(signal)
+            allowed, check_reason = decision.allowed, decision.reason
             risk_blocked = not allowed
 
             # Log all non-HOLD signals — synchronous, non-blocking

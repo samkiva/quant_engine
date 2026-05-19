@@ -7,8 +7,8 @@ from cache.redis_client import init_redis, close_redis
 from backtesting.strategy import VWAPCrossStrategy
 from backtesting.portfolio import Portfolio
 from paper_trading.live_datasource import LiveDataSource
-from paper_trading.risk_layer import RiskLayer, RiskConfig
 from paper_trading.paper_engine import PaperEngine
+from risk.engine import RiskEngineV2
 from config.settings import settings
 
 configure_logging()
@@ -27,14 +27,14 @@ async def main() -> None:
     datasource = LiveDataSource(symbol=SYMBOL)
     strategy = VWAPCrossStrategy()
     portfolio = Portfolio(initial_cash=10_000.0, trade_quantity=0.001)
-    risk = RiskLayer(
+
+    risk = RiskEngineV2(
         portfolio=portfolio,
-        config=RiskConfig(
-            max_daily_loss_pct=2.0,
-            max_position_pct=10.0,
-            max_signals_per_minute=10,
-            post_reconnect_hold_secs=5.0,
-        ),
+        base_trade_qty=0.001,
+        max_daily_loss_pct=2.0,
+        max_signals_per_minute=10,
+        post_reconnect_hold_secs=5.0,
+        cooldown_after_loss_secs=30.0,
     )
 
     engine = PaperEngine(
@@ -64,10 +64,8 @@ async def main() -> None:
         trades_received = engine.tick_count
     finally:
         await record_disconnect(
-            session_id,
-            trades_received,
-            reason="paper_session_ended",
-            is_clean=True,
+            session_id, trades_received,
+            reason="paper_session_ended", is_clean=True,
         )
         await stop_write_worker()
         await close_db_pool()
