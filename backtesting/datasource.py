@@ -43,11 +43,13 @@ class PostgresDataSource(DataSource):
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
         batch_size: int = 500,
+        table_name: str = "trades",
     ) -> None:
         self._symbol = symbol
         self._start_time = start_time
         self._end_time = end_time
         self._batch_size = batch_size
+        self._table_name = table_name
 
     async def stream(self) -> AsyncIterator[Tick]:
         from db.connection import get_pool
@@ -57,9 +59,9 @@ class PostgresDataSource(DataSource):
 
         while True:
             async with pool.acquire() as conn:
-                rows = await conn.fetch("""
+                rows = await conn.fetch(f"""
                     SELECT trade_time, symbol, price, quantity, is_buyer_maker
-                    FROM trades
+                    FROM {self._table_name}
                     WHERE symbol = $1
                       AND ($2::timestamptz IS NULL OR trade_time >= $2)
                       AND ($3::timestamptz IS NULL OR trade_time <= $3)
@@ -92,8 +94,8 @@ class PostgresDataSource(DataSource):
         from db.connection import get_pool
         pool = get_pool()
         async with pool.acquire() as conn:
-            return await conn.fetchval("""
-                SELECT COUNT(*) FROM trades
+            return await conn.fetchval(f"""
+                SELECT COUNT(*) FROM {self._table_name}
                 WHERE symbol = $1
                   AND ($2::timestamptz IS NULL OR trade_time >= $2)
                   AND ($3::timestamptz IS NULL OR trade_time <= $3)
