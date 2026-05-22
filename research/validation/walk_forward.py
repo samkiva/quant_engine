@@ -6,14 +6,11 @@ from db.connection import get_pool
 
 logger = structlog.get_logger()
 
+GAP_THRESHOLD_MINUTES = 15  # Gaps larger than this break a segment
+
 
 @dataclass(frozen=True)
 class WalkForwardWindow:
-    """
-    A single walk-forward period with strict train/test separation.
-    Test window is always strictly AFTER train window — no overlap.
-    Parameters frozen after training — never tuned on test data.
-    """
     window_id: int
     train_start: datetime
     train_end: datetime
@@ -21,8 +18,59 @@ class WalkForwardWindow:
     test_end: datetime
     train_trade_count: int = 0
     test_trade_count: int = 0
-    train_fingerprint: str = ""
-    test_fingerprint: str = ""
+
+
+async def get_contiguous_segments(
+    table: str,
+    symbol: str,
+    gap_threshold_minutes: float = GAP_THRESHOLD_MINUTES,
+) -> list[tuple[datetime, datetime]]:
+    """
+    Identifies contiguous data segments by detecting gaps.
+    Returns list of (segment_start, segment_end) tuples.
+    Walk-forward windows are only built within segments.
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT trade_time FROM {table}
+            WHERE symbol = $1
+            ORDER BY trade_time ASC
+        """, symbol)
+
+    if not rows:
+        return []
+
+    times = [r["trade_time"] for r in rows]
+    threshold = timedelta(minutes=gap_threshold_minutes)
+
+    segments = []
+    seg_start = times[0]
+    prev = times[0]
+
+    for t in times[1:]:
+        if t - prev > threshold:
+            segments.append((seg_start, prev))
+            seg_start = t
+        prev = t
+    segments.append((seg_start, prev))
+
+    logger.info(
+        "contiguous_segments_found",
+        count=len(segments),
+        gap_threshold_minutes=gap_threshold_minutes,
+    )
+    for i, (s, e) in enumerate(segments):
+        duration = (e - s).total_seconds() / 3600
+        logger.debug(
+            "segment",
+            id=i,
+            start=s,
+            end=e,
+            duration_hours=round(duration, 2),
+        )
+
+    return segments
 
 
 async def generate_windows(
@@ -34,91 +82,65 @@ async def generate_windows(
     min_test_trades: int = 50,
 ) -> list[WalkForwardWindow]:
     """
-    Generates non-overlapping walk-forward windows from the dataset.
-    Skips windows with insufficient data for statistical validity.
-
-    train_hours: size of training window
-    test_hours:  size of test window (immediately follows train)
-    min_train_trades: skip window if train has fewer trades
-    min_test_trades:  skip window if test has fewer trades
+    Generates non-overlapping walk-forward windows from contiguous
+    data segments only. Never builds windows across data gaps.
     """
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        bounds = await conn.fetchrow(f"""
-            SELECT MIN(trade_time) as first, MAX(trade_time) as last
-            FROM {table}
-            WHERE symbol = $1
-        """, symbol)
+    segments = await get_contiguous_segments(table, symbol)
 
-    if not bounds or not bounds["first"]:
-        logger.warning("no_data_for_windows", table=table, symbol=symbol)
+    if not segments:
+        logger.warning("no_segments_found", table=table, symbol=symbol)
         return []
 
-    first = bounds["first"]
-    last = bounds["last"]
-    total_hours = (last - first).total_seconds() / 3600
-
-    logger.info(
-        "generating_walk_forward_windows",
-        table=table,
-        symbol=symbol,
-        total_hours=round(total_hours, 2),
-        train_hours=train_hours,
-        test_hours=test_hours,
-    )
-
+    pool = get_pool()
     windows = []
     window_id = 0
-    cursor = first
 
-    while True:
-        train_start = cursor
-        train_end = cursor + timedelta(hours=train_hours)
-        test_start = train_end
-        test_end = test_start + timedelta(hours=test_hours)
-
-        if test_end > last:
-            break
-
-        async with pool.acquire() as conn:
-            train_count = await conn.fetchval(f"""
-                SELECT COUNT(*) FROM {table}
-                WHERE symbol = $1
-                  AND trade_time >= $2 AND trade_time < $3
-            """, symbol, train_start, train_end)
-
-            test_count = await conn.fetchval(f"""
-                SELECT COUNT(*) FROM {table}
-                WHERE symbol = $1
-                  AND trade_time >= $2 AND trade_time < $3
-            """, symbol, test_start, test_end)
-
-        if train_count >= min_train_trades and test_count >= min_test_trades:
-            windows.append(WalkForwardWindow(
-                window_id=window_id,
-                train_start=train_start,
-                train_end=train_end,
-                test_start=test_start,
-                test_end=test_end,
-                train_trade_count=train_count,
-                test_trade_count=test_count,
-            ))
-            window_id += 1
+    for seg_start, seg_end in segments:
+        seg_hours = (seg_end - seg_start).total_seconds() / 3600
+        if seg_hours < train_hours + test_hours:
             logger.debug(
-                "window_accepted",
-                window_id=window_id,
-                train_trades=train_count,
-                test_trades=test_count,
+                "segment_too_short",
+                hours=round(seg_hours, 2),
+                required=train_hours + test_hours,
             )
-        else:
-            logger.debug(
-                "window_skipped_insufficient_data",
-                train_trades=train_count,
-                test_trades=test_count,
-            )
+            continue
 
-        # Advance by one train window (non-overlapping)
-        cursor = train_end
+        cursor = seg_start
+        while True:
+            train_start = cursor
+            train_end = cursor + timedelta(hours=train_hours)
+            test_start = train_end
+            test_end = test_start + timedelta(hours=test_hours)
+
+            if test_end > seg_end:
+                break
+
+            async with pool.acquire() as conn:
+                train_count = await conn.fetchval(f"""
+                    SELECT COUNT(*) FROM {table}
+                    WHERE symbol = $1
+                      AND trade_time >= $2 AND trade_time < $3
+                """, symbol, train_start, train_end)
+
+                test_count = await conn.fetchval(f"""
+                    SELECT COUNT(*) FROM {table}
+                    WHERE symbol = $1
+                      AND trade_time >= $2 AND trade_time < $3
+                """, symbol, test_start, test_end)
+
+            if train_count >= min_train_trades and test_count >= min_test_trades:
+                windows.append(WalkForwardWindow(
+                    window_id=window_id,
+                    train_start=train_start,
+                    train_end=train_end,
+                    test_start=test_start,
+                    test_end=test_end,
+                    train_trade_count=train_count,
+                    test_trade_count=test_count,
+                ))
+                window_id += 1
+
+            cursor = train_end
 
     logger.info("walk_forward_windows_generated", count=len(windows))
     return windows
