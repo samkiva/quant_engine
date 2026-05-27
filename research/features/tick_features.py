@@ -119,3 +119,51 @@ def build_feature_dataframe(df: pd.DataFrame, vol_window: int = 50) -> pd.DataFr
     )
 
     return result
+
+
+def compute_intensity_spike(
+    intensity: pd.Series,
+    baseline_window: int = 200,
+) -> pd.Series:
+    """
+    Normalizes trade intensity by its rolling median baseline.
+
+    intensity_spike = intensity / rolling_median(intensity, baseline_window)
+
+    Values > 1 indicate above-baseline activity.
+    Values < 1 indicate below-baseline activity.
+
+    Rolling median (not mean) is used because intensity distributions
+    are right-skewed — median is a more robust baseline estimator.
+
+    First (baseline_window - 1) values are NaN by design.
+    No lookahead: baseline uses only past observations.
+    """
+    baseline = intensity.rolling(window=baseline_window, min_periods=baseline_window).median()
+    spike = intensity / baseline
+    spike = spike.replace([float("inf"), float("-inf")], float("nan"))
+    return spike
+
+
+def compute_vol_expansion(
+    rolling_vol: pd.Series,
+    forward_window: int = 50,
+) -> pd.Series:
+    """
+    Ratio of future volatility to current volatility.
+
+    vol_expansion = rolling_vol.shift(-forward_window) / rolling_vol
+
+    Values > 1: volatility expanded in next N ticks.
+    Values < 1: volatility contracted.
+    Values = 1: no change.
+
+    Last (forward_window) values are NaN — no future data available.
+    This is intentionally forward-looking and must ONLY be used
+    as a prediction target, never as a feature input.
+    Division by zero replaced with NaN explicitly.
+    """
+    future_vol = rolling_vol.shift(-forward_window)
+    expansion = future_vol / rolling_vol.replace(0, float("nan"))
+    expansion = expansion.replace([float("inf"), float("-inf")], float("nan"))
+    return expansion
