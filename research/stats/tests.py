@@ -203,3 +203,117 @@ def partial_correlation(
 
     result = float(np.corrcoef(x_resid, y_resid)[0, 1])
     return round(result, 6)
+
+
+def one_sample_ttest(
+    sample: np.ndarray,
+    null_mean: float = 0.0,
+    alternative: str = "less",
+    significance_level: float = 0.01,
+) -> StatTestResult:
+    """
+    One-sample t-test against a null mean.
+
+    For H2 (mean reversion): alternative='less' tests whether
+    mean forward return is significantly below null_mean (0.0).
+    A significant result supports mean reversion.
+
+    alternative: 'less', 'greater', or 'two-sided'
+    Must be pre-registered before seeing data.
+
+    Assumptions:
+    - Observations approximately independent (enforced by
+      non-overlapping entry window logic upstream)
+    - Approximately normal distribution of means (CLT applies
+      for n > 30)
+    """
+    from scipy import stats
+
+    sample = np.array(sample, dtype=float)
+    sample = sample[~np.isnan(sample)]
+
+    statistic, p_two_sided = stats.ttest_1samp(sample, null_mean)
+
+    if alternative == "less":
+        p_value = p_two_sided / 2 if statistic < 0 else 1 - p_two_sided / 2
+    elif alternative == "greater":
+        p_value = p_two_sided / 2 if statistic > 0 else 1 - p_two_sided / 2
+    else:
+        p_value = p_two_sided
+
+    significant = p_value < significance_level
+    mean_val = float(np.mean(sample))
+
+    interpretation = (
+        f"Mean={mean_val:.6f} is significantly {alternative} than "
+        f"{null_mean} (p={p_value:.4f})"
+        if significant else
+        f"Cannot reject null: mean={mean_val:.6f} not significantly "
+        f"{alternative} than {null_mean} (p={p_value:.4f})"
+    )
+
+    return StatTestResult(
+        test_name=f"t_test_{alternative}",
+        statistic=round(statistic, 6),
+        p_value=round(p_value, 6),
+        significant=significant,
+        significance_level=significance_level,
+        sample_size_a=len(sample),
+        sample_size_b=0,
+        interpretation=interpretation,
+    )
+
+
+def sign_persistence_test(
+    entry_returns: np.ndarray,
+    forward_returns: np.ndarray,
+    significance_level: float = 0.01,
+) -> dict:
+    """
+    Tests whether forward return sign matches entry return sign.
+
+    sign_persistence = P(sign(forward) == sign(entry))
+
+    H2 (mean reversion) predicts sign_persistence < 0.5:
+    forward return direction opposes the entry direction.
+
+    Uses binomial test against null p=0.5.
+    NaN pairs removed before testing.
+    """
+    from scipy import stats
+
+    entry = np.array(entry_returns, dtype=float)
+    forward = np.array(forward_returns, dtype=float)
+
+    mask = ~(np.isnan(entry) | np.isnan(forward))
+    entry, forward = entry[mask], forward[mask]
+
+    if len(entry) < 10:
+        return {"persistence": float("nan"), "significant": False, "n": len(entry)}
+
+    # Exclude zero returns from sign comparison
+    nonzero = (entry != 0) & (forward != 0)
+    entry, forward = entry[nonzero], forward[nonzero]
+
+    same_sign = np.sign(entry) == np.sign(forward)
+    n_same = int(same_sign.sum())
+    n_total = len(same_sign)
+    persistence = n_same / n_total
+
+    # One-sided binomial test: alternative='less' for mean reversion
+    result = stats.binomtest(n_same, n_total, p=0.5, alternative="less")
+    p_value = result.pvalue
+    significant = p_value < significance_level
+
+    return {
+        "persistence": round(persistence, 4),
+        "n_same_sign": n_same,
+        "n_total": n_total,
+        "p_value": round(p_value, 6),
+        "significant": significant,
+        "interpretation": (
+            f"Sign persistence={persistence:.3f} — "
+            f"{'mean reversion supported' if persistence < 0.5 else 'momentum supported'} "
+            f"(p={p_value:.4f}, {'significant' if significant else 'not significant'})"
+        ),
+    }

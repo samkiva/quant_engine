@@ -1,113 +1,244 @@
-import asyncio
 import argparse
-from core.logging_setup import configure_logging
-from db.connection import init_db_pool, close_db_pool
+import asyncio
+import importlib
 
-configure_logging()
+from db.connection import get_pool, init_db_pool
+
 
 EXPERIMENTS = {
     "vol_clustering": "research.experiments.vol_clustering",
     "intensity_lead": "research.experiments.intensity_lead",
+    "regime_direction": "research.experiments.regime_direction",
 }
 
 
 def _print_vol_clustering(result: dict) -> None:
-    ks = result["ks_test"]
-    high = result["high_vol_distribution"]
-    normal = result["normal_vol_distribution"]
-    acf = result["vol_autocorrelation"]
+    if "error" in result:
+        print(f"\nError: {result['error']}")
+        return
 
-    print(f"\nConclusion: {result['conclusion']}")
-    print(f"\nKS Test:")
-    print(f"  Statistic:   {ks.statistic:.6f}")
-    print(f"  P-value:     {ks.p_value:.6f}")
-    print(f"  Significant: {ks.significant} (threshold: {ks.significance_level})")
-    print(f"  {ks.interpretation}")
-    print(f"\nHigh-Vol future vol (n={high['n']:,}):   mean={high['mean']:.6f}  p90={high['p90']:.6f}")
-    print(f"Normal-Vol future vol (n={normal['n']:,}): mean={normal['mean']:.6f}  p90={normal['p90']:.6f}")
-    print(f"\nVolatility Autocorrelation:")
-    for lag in range(1, 6):
-        bar = "█" * int(abs(acf[lag]) * 40)
-        print(f"  Lag {lag}: {acf[lag]:+.4f} {bar}")
+    print(f"\nInterpretation: {result['interpretation']}")
+    print(f"Usable rows: {result['usable_rows']}")
+
+    print("\nKolmogorov-Smirnov Test:")
+
+    ks = result["ks_test"]
+
+    print(f"  Statistic:    {ks.statistic}")
+    print(f"  P-value:      {ks.p_value}")
+    print(f"  Significant:  {ks.significant}")
+
+    print("\nDistribution A:")
+
+    for k, v in result["distribution_a"].items():
+        print(f"  {k}: {v}")
+
+    print("\nDistribution B:")
+
+    for k, v in result["distribution_b"].items():
+        print(f"  {k}: {v}")
 
 
 def _print_intensity_lead(result: dict) -> None:
-    ccf = result["ccf"]
-    partial = result["partial_correlation"]
-    regime = result["regime_analysis"]
-    stability = result["temporal_stability"]
+    if "error" in result:
+        print(f"\nError: {result['error']}")
+        return
 
     print(f"\nInterpretation: {result['interpretation']}")
-    print(f"Usable rows: {result['n']:,}")
+    print(f"Usable rows: {result['usable_rows']}")
 
-    print(f"\nCross-Correlation (intensity_spike → vol_expansion):")
-    print(f"  Peak lag:      {ccf.get('peak_lag')}")
-    print(f"  Peak corr:     {ccf.get('peak_corr')}")
-    print(f"  Bartlett SE:   {ccf.get('bartlett_se')}")
-    sig_lags = ccf.get("significant_lags", {})
-    print(f"  Significant lags (>3 SE): {sorted(sig_lags.keys()) if sig_lags else 'none'}")
-    print(f"\n  CCF at key lags:")
-    ccf_vals = ccf.get("ccf", {})
-    for lag in [1, 2, 5, 10, 20, 50]:
-        val = ccf_vals.get(lag, float("nan"))
-        if val != float("nan"):
-            bar = "█" * int(abs(val) * 200)
-            sign = "+" if val >= 0 else "-"
-            print(f"    Lag {lag:2d}: {sign}{abs(val):.4f} {bar}")
+    print("\nCross-Correlation (intensity_spike → vol_expansion):")
 
-    print(f"\nPartial Correlation (controlling for current rolling_vol):")
-    print(f"  Partial corr:  {partial.get('partial_corr')}")
-    print(f"  Significant:   {partial.get('significant')}")
-    print(f"  Bartlett SE:   {partial.get('bartlett_se')}")
+    ccf = result["cross_correlation"]
 
-    print(f"\nRegime-Conditional Analysis:")
-    for regime_name in ["high_vol", "normal_vol"]:
-        r = regime.get(regime_name, {})
-        if r.get("skipped"):
-            print(f"  {regime_name}: skipped (n={r.get('n')})")
-        else:
-            print(f"  {regime_name}: n={r.get('n'):,}  peak_lag={r.get('peak_lag')}  "
-                  f"peak_corr={r.get('peak_corr')}  ccf_lag1={r.get('ccf_lag1')}")
+    print(f"  Peak lag:      {ccf['peak_lag']}")
+    print(f"  Peak corr:     {ccf['peak_corr']}")
+    print(f"  Bartlett SE:   {ccf['bartlett_se']}")
 
-    print(f"\nTemporal Stability:")
+    print(
+        f"  Significant lags (>3 SE): "
+        f"{ccf['significant_lags']}"
+    )
+
+    print("\n  CCF at key lags:")
+
+    for lag, val in ccf["selected_lags"].items():
+        bar = "█" * int(abs(val) * 100)
+
+        print(f"    Lag {lag:>2}: {val:.4f} {bar}")
+
+    print(
+        "\nPartial Correlation "
+        "(controlling for current rolling_vol):"
+    )
+
+    pc = result["partial_correlation"]
+
+    print(f"  Partial corr:  {pc['partial_corr']}")
+    print(f"  Significant:   {pc['significant']}")
+    print(f"  Bartlett SE:   {pc['bartlett_se']}")
+
+    print("\nRegime-Conditional Analysis:")
+
+    for regime, data in result["regime_analysis"].items():
+        print(
+            f"  {regime}: "
+            f"n={data['n']}  "
+            f"peak_lag={data['peak_lag']}  "
+            f"peak_corr={data['peak_corr']}  "
+            f"ccf_lag1={data['ccf_lag1']}"
+        )
+
+    print("\nTemporal Stability:")
+
+    for split, data in result["stability_analysis"].items():
+        print(
+            f"  {split}: "
+            f"n={data['n']}  "
+            f"peak_lag={data['peak_lag']}  "
+            f"peak_corr={data['peak_corr']}  "
+            f"ccf_lag1={data['ccf_lag1']}"
+        )
+
+    print(f"  Stable: {result['stable']}")
+
+
+def _print_regime_direction(result: dict) -> None:
+    if "error" in result:
+        print(f"\nError: {result['error']}")
+        return
+
+    print(
+        "\nHypothesis: "
+        "H2 — Mean Reversion after high-vol regime entry"
+    )
+
+    print(
+        f"Forward window: "
+        f"{result['forward_window']} ticks (pre-registered)"
+    )
+
+    print(f"Regime entries: {result['n_entries']}")
+
+    print(f"\nConclusion: {result['conclusion']}")
+
+    print("\nCriteria:")
+
+    for k, v in result["criteria"].items():
+        status = "PASS" if v else "FAIL"
+        print(f"  {status}  {k}")
+
+    fs = result["full_sample"]
+
+    print(f"\nFull Sample (n={fs['n']}):")
+
+    print(
+        f"  Mean forward return: "
+        f"{fs['mean_forward_return']:.6f}"
+    )
+
+    print(
+        f"  Round-trip cost: "
+        f"{fs['round_trip_cost']:.4f}"
+    )
+
+    print(
+        f"  Economic edge: "
+        f"{fs['economically_significant']}"
+    )
+
+    print(
+        f"  T-test ({fs['ttest'].test_name}): "
+        f"p={fs['ttest'].p_value:.4f}  "
+        f"significant={fs['ttest'].significant}"
+    )
+
+    print(f"  {fs['ttest'].interpretation}")
+
+    sp = fs["sign_persistence"]
+
+    print(
+        f"  Sign persistence: "
+        f"{sp.get('persistence')}  "
+        f"p={sp.get('p_value')}  "
+        f"{sp.get('interpretation')}"
+    )
+
+    print(
+        f"\nTemporal Stability: "
+        f"{'STABLE' if result['stable'] else 'UNSTABLE'}"
+    )
+
     for half in ["first_half", "second_half"]:
-        s = stability.get(half, {})
-        if s.get("skipped"):
-            print(f"  {half}: skipped (n={s.get('n')})")
-        else:
-            print(f"  {half}: n={s.get('n'):,}  peak_lag={s.get('peak_lag')}  "
-                  f"peak_corr={s.get('peak_corr')}  ccf_lag1={s.get('ccf_lag1')}")
-    print(f"  Stable: {stability.get('stable')}")
+        h = result[half]
+
+        print(
+            f"  {half}: "
+            f"n={h['n']}  "
+            f"mean={h['mean_forward_return']:.6f}  "
+            f"ttest_sig={h['ttest'].significant}"
+        )
+
+    for label in ["up_entry", "down_entry"]:
+        r = result.get(label)
+
+        if r:
+            print(f"\n{label} (n={r['n']}):")
+
+            print(
+                f"  Mean forward return: "
+                f"{r['mean_forward_return']:.6f}"
+            )
+
+            print(
+                f"  Sign persistence: "
+                f"{r['sign_persistence'].get('persistence')}"
+            )
 
 
 async def main(experiment: str) -> None:
+    if experiment not in EXPERIMENTS:
+        raise ValueError(
+            f"Unknown experiment '{experiment}'. "
+            f"Available: {list(EXPERIMENTS.keys())}"
+        )
+
+    # Initialize database pool FIRST
     await init_db_pool()
 
-    import importlib
-    module_path = EXPERIMENTS[experiment]
-    module = importlib.import_module(module_path)
-
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"EXPERIMENT: {experiment}")
-    print("="*60)
+    print("=" * 60)
+
+    module = importlib.import_module(EXPERIMENTS[experiment])
 
     result = await module.run()
 
     if experiment == "vol_clustering":
         _print_vol_clustering(result)
+
     elif experiment == "intensity_lead":
         _print_intensity_lead(result)
 
-    await close_db_pool()
+    elif experiment == "regime_direction":
+        _print_regime_direction(result)
+
+    # Graceful async cleanup
+    pool = get_pool()
+
+    if pool is not None:
+        await pool.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run a research experiment")
+    parser = argparse.ArgumentParser()
+
     parser.add_argument(
         "--experiment",
-        choices=list(EXPERIMENTS.keys()),
-        default="vol_clustering",
-        help="Experiment to run",
+        required=True,
+        choices=EXPERIMENTS.keys(),
     )
+
     args = parser.parse_args()
+
     asyncio.run(main(args.experiment))

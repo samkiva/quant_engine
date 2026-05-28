@@ -167,3 +167,64 @@ def compute_vol_expansion(
     expansion = future_vol / rolling_vol.replace(0, float("nan"))
     expansion = expansion.replace([float("inf"), float("-inf")], float("nan"))
     return expansion
+
+
+def compute_forward_return(
+    prices: pd.Series,
+    forward_window: int = 50,
+) -> pd.Series:
+    """
+    Log return from current tick to N ticks ahead.
+
+    forward_return_t = log(price_{t+N} / price_t)
+
+    PREDICTION TARGET ONLY. Never use as a feature.
+    Last (forward_window) values are NaN — no future data.
+    """
+    return np.log(prices.shift(-forward_window) / prices)
+
+
+def compute_entry_return(
+    prices: pd.Series,
+    lookback_window: int = 50,
+) -> pd.Series:
+    """
+    Log return from N ticks ago to current tick.
+
+    entry_return_t = log(price_t / price_{t-N})
+
+    Uses only past prices — safe as feature input.
+    First (lookback_window) values are NaN.
+    """
+    return np.log(prices / prices.shift(lookback_window))
+
+
+def compute_regime_entries(
+    high_vol: pd.Series,
+    min_spacing: int = 50,
+) -> pd.Series:
+    """
+    Detects transitions into high-vol regime with enforced
+    minimum spacing to prevent overlapping forward windows.
+
+    Entry at tick t requires:
+    1. high_vol_t == 1
+    2. high_vol_{t-1} == 0  (transition, not continuation)
+    3. At least min_spacing ticks since last accepted entry
+
+    min_spacing must equal forward_window to guarantee
+    non-overlapping prediction targets. Caller is responsible
+    for passing the correct value.
+
+    Returns boolean Series — True at accepted entry ticks only.
+    """
+    raw_entries = (high_vol == 1) & (high_vol.shift(1) == 0)
+    entries = pd.Series(False, index=high_vol.index)
+    last_entry_pos = -min_spacing
+
+    for pos, (idx, is_entry) in enumerate(raw_entries.items()):
+        if is_entry and (pos - last_entry_pos) >= min_spacing:
+            entries[idx] = True
+            last_entry_pos = pos
+
+    return entries
