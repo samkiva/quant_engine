@@ -268,6 +268,7 @@ def sign_persistence_test(
     entry_returns: np.ndarray,
     forward_returns: np.ndarray,
     significance_level: float = 0.01,
+    alternative: str = "two-sided",
 ) -> dict:
     """
     Tests whether forward return sign matches entry return sign.
@@ -301,7 +302,7 @@ def sign_persistence_test(
     persistence = n_same / n_total
 
     # One-sided binomial test: alternative='less' for mean reversion
-    result = stats.binomtest(n_same, n_total, p=0.5, alternative="less")
+    result = stats.binomtest(n_same, n_total, p=0.5, alternative=alternative)
     p_value = result.pvalue
     significant = p_value < significance_level
 
@@ -317,3 +318,65 @@ def sign_persistence_test(
             f"(p={p_value:.4f}, {'significant' if significant else 'not significant'})"
         ),
     }
+
+
+def two_sample_ttest(
+    sample_a: np.ndarray,
+    sample_b: np.ndarray,
+    alternative: str = "greater",
+    significance_level: float = 0.01,
+    label_a: str = "sample_a",
+    label_b: str = "sample_b",
+) -> StatTestResult:
+    """
+    Welch two-sample t-test. Does not assume equal variance.
+
+    Tests whether mean(sample_a) differs from mean(sample_b)
+    in the specified direction.
+
+    For H1: alternative='greater' tests whether entry-conditioned
+    forward returns exceed unconditional baseline returns.
+
+    This is the correct test for regime conditioning —
+    it answers whether regime entry changes expected return
+    relative to what the market normally produces.
+    """
+    from scipy import stats
+
+    a = np.array(sample_a, dtype=float)
+    b = np.array(sample_b, dtype=float)
+    a = a[~np.isnan(a)]
+    b = b[~np.isnan(b)]
+
+    statistic, p_two_sided = stats.ttest_ind(a, b, equal_var=False)
+
+    if alternative == "greater":
+        p_value = p_two_sided / 2 if statistic > 0 else 1 - p_two_sided / 2
+    elif alternative == "less":
+        p_value = p_two_sided / 2 if statistic < 0 else 1 - p_two_sided / 2
+    else:
+        p_value = p_two_sided
+
+    significant = p_value < significance_level
+    mean_a = float(np.mean(a))
+    mean_b = float(np.mean(b))
+    mean_diff = mean_a - mean_b
+
+    interpretation = (
+        f"{label_a} mean={mean_a:.6f} is significantly {alternative} than "
+        f"{label_b} mean={mean_b:.6f}, diff={mean_diff:.6f} (p={p_value:.4f})"
+        if significant else
+        f"Cannot distinguish {label_a} mean={mean_a:.6f} from "
+        f"{label_b} mean={mean_b:.6f}, diff={mean_diff:.6f} (p={p_value:.4f})"
+    )
+
+    return StatTestResult(
+        test_name=f"welch_ttest_{alternative}",
+        statistic=round(statistic, 6),
+        p_value=round(p_value, 6),
+        significant=significant,
+        significance_level=significance_level,
+        sample_size_a=len(a),
+        sample_size_b=len(b),
+        interpretation=interpretation,
+    )

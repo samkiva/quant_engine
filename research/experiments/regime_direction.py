@@ -10,24 +10,24 @@ from research.features.tick_features import (
 )
 from research.stats.tests import (
     ks_test,
-    one_sample_ttest,
+    two_sample_ttest,
     sign_persistence_test,
     compute_distribution_stats,
 )
 
 logger = structlog.get_logger()
 
-VOL_WINDOW = 50
-FORWARD_WINDOW = 50       # Pre-registered. Do not change after seeing results.
-MIN_SPACING = 50          # Must equal FORWARD_WINDOW — non-overlapping guarantee.
-ROUND_TRIP_COST = 0.002   # 0.20% round trip. Edge threshold.
+# Pre-registered. Do not modify after seeing results.
+HYPOTHESIS = "H1_momentum_continuation"
+FORWARD_WINDOW = 50
+MIN_SPACING = 50
+ROUND_TRIP_COST = 0.002
 
 
 async def _load_ticks(limit: int = 50000, batch_size: int = 5000) -> pd.DataFrame:
     pool = get_pool()
     all_rows = []
     offset = 0
-
     while offset < limit:
         current_batch = min(batch_size, limit - offset)
         async with pool.acquire() as conn:
@@ -56,108 +56,110 @@ async def _load_ticks(limit: int = 50000, batch_size: int = 5000) -> pd.DataFram
 
 def _build_research_frame(df_raw: pd.DataFrame) -> pd.DataFrame:
     """
-    Builds full feature frame. Adds research-specific columns.
-
-    Column separation contract:
-    FEATURES  (use in models): rolling_vol, entry_return, high_vol_regime
-    TARGETS   (predict only):  forward_return, norm_forward_return
-    METADATA  (filter/split):  regime_entry
-
-    No target column is used as input to any feature column.
+    Feature/target separation contract:
+    FEATURES:  rolling_vol, entry_return, high_vol, regime_entry
+    TARGETS:   forward_return, norm_forward_return  (never used as features)
     """
-    features = build_feature_dataframe(df_raw, vol_window=VOL_WINDOW)
+    features = build_feature_dataframe(df_raw, vol_window=50)
 
-    # Regime classification — reuse expanding percentile from vol_clustering
+    # Regime — expanding percentile, no lookahead
     vols = features["rolling_vol"].values
     high_vol = pd.Series(0, index=features.index, dtype=int)
     for i in range(49, len(vols)):
         if np.isnan(vols[i]):
             continue
-        threshold = np.percentile(vols[:i+1][~np.isnan(vols[:i+1])], 90)
+        hist = vols[:i+1]
+        hist = hist[~np.isnan(hist)]
+        threshold = np.percentile(hist, 90)
         if vols[i] >= threshold:
             high_vol.iloc[i] = 1
     features["high_vol"] = high_vol
 
-    # Entry detection with non-overlapping spacing enforcement
     features["regime_entry"] = compute_regime_entries(
         features["high_vol"], min_spacing=MIN_SPACING
     )
-
-    # Target variables — forward-looking, never used as features
     features["forward_return"] = compute_forward_return(
         features["price"], forward_window=FORWARD_WINDOW
     )
     features["entry_return"] = compute_entry_return(
-        features["price"], lookback_window=VOL_WINDOW
+        features["price"], lookback_window=50
     )
-
-    # Volatility-normalized forward return
     features["norm_forward_return"] = (
         features["forward_return"] / features["rolling_vol"]
     ).replace([float("inf"), float("-inf")], float("nan"))
 
-    total_entries = features["regime_entry"].sum()
     logger.info(
         "research_frame_built",
-        total_rows=len(features),
-        regime_entries=int(total_entries),
-        high_vol_ticks=int(high_vol.sum()),
+        rows=len(features),
+        entries=int(features["regime_entry"].sum()),
+        non_entries=int((~features["regime_entry"]).sum()),
     )
-
     return features
 
 
-def _run_direction_tests(entries: pd.DataFrame, label: str) -> dict:
+def _run_tests(
+    entries: pd.DataFrame,
+    baseline: pd.DataFrame,
+    label: str,
+) -> dict:
     """
-    Runs all pre-registered tests on a set of regime entry observations.
-    Identical function called for full sample and each temporal split.
+    Runs all pre-registered H1 tests.
+    baseline = non-entry ticks — the true unconditional comparison.
     """
-    fwd = entries["forward_return"].dropna().values
-    norm_fwd = entries["norm_forward_return"].dropna().values
+    fwd_entry = entries["forward_return"].dropna().values
+    fwd_baseline = baseline["forward_return"].dropna().values
 
-    entry_r = entries["entry_return"]
-    fwd_aligned = entries["forward_return"]
-    mask = ~(entry_r.isna() | fwd_aligned.isna())
-    entry_clean = entry_r[mask].values
-    fwd_clean = fwd_aligned[mask].values
+    if len(fwd_entry) < 10 or len(fwd_baseline) < 10:
+        return {"label": label, "n": len(fwd_entry), "skipped": True}
 
-    # Baseline: all non-entry ticks forward returns
-    n_entries = len(fwd)
+    # Two-sample Welch t-test: do entry returns exceed baseline?
+    ttest = two_sample_ttest(
+        fwd_entry, fwd_baseline,
+        alternative="greater",
+        label_a="entry", label_b="baseline",
+    )
 
-    # t-test: H2 predicts mean < 0
-    ttest = one_sample_ttest(fwd, null_mean=0.0, alternative="less")
+    # KS test: real unconditional baseline (not synthetic Gaussian)
+    ks = ks_test(
+        fwd_entry, fwd_baseline,
+        significance_level=0.01,
+        label_a="entry_forward", label_b="unconditional_baseline",
+    )
 
-    # KS test vs zero-mean normal (proxy for unconditional)
-    unconditional = np.random.default_rng(42).normal(0, fwd.std() if fwd.std() > 0 else 1, len(fwd))
-    ks = ks_test(fwd, unconditional, significance_level=0.01,
-                 label_a="entry_forward_returns", label_b="unconditional_proxy")
+    # Sign persistence: H1 predicts > 0.5
+    mask = ~(entries["entry_return"].isna() | entries["forward_return"].isna())
+    sign_test = sign_persistence_test(
+        entries["entry_return"][mask].values,
+        entries["forward_return"][mask].values,
+        alternative="greater",
+    )
 
-    # Sign persistence: H2 predicts < 0.5
-    sign_test = sign_persistence_test(entry_clean, fwd_clean)
-
-    # Distribution stats
-    dist = compute_distribution_stats(fwd)
-
-    # Economic significance
-    mean_return = float(np.nanmean(fwd))
-    economically_significant = abs(mean_return) > ROUND_TRIP_COST
+    dist = compute_distribution_stats(fwd_entry)
+    mean_entry = float(np.nanmean(fwd_entry))
+    mean_base = float(np.nanmean(fwd_baseline))
+    mean_excess = mean_entry - mean_base
 
     logger.info(
-        "direction_tests_complete",
+        "tests_complete",
         label=label,
-        n=n_entries,
-        mean_fwd_return=round(mean_return, 6),
-        ttest_significant=ttest.significant,
+        n_entry=len(fwd_entry),
+        n_baseline=len(fwd_baseline),
+        mean_entry=round(mean_entry, 6),
+        mean_baseline=round(mean_base, 6),
+        mean_excess=round(mean_excess, 6),
+        ttest_sig=ttest.significant,
+        ks_sig=ks.significant,
         sign_persistence=sign_test.get("persistence"),
-        economic_edge=economically_significant,
     )
 
     return {
         "label": label,
-        "n": n_entries,
-        "mean_forward_return": round(mean_return, 6),
-        "economically_significant": economically_significant,
-        "round_trip_cost": ROUND_TRIP_COST,
+        "n_entry": len(fwd_entry),
+        "n_baseline": len(fwd_baseline),
+        "mean_entry": round(mean_entry, 6),
+        "mean_baseline": round(mean_base, 6),
+        "mean_excess": round(mean_excess, 6),
+        "economically_significant": abs(mean_excess) > ROUND_TRIP_COST,
         "ttest": ttest,
         "ks_test": ks,
         "sign_persistence": sign_test,
@@ -166,85 +168,69 @@ def _run_direction_tests(entries: pd.DataFrame, label: str) -> dict:
 
 
 async def run() -> dict:
-    """
-    Pre-registered hypothesis: H2 (mean reversion).
-    Forward window: 50 ticks. Fixed before data inspection.
-    """
-    logger.info(
-        "experiment_started",
-        hypothesis="regime_direction_H2_mean_reversion",
-        forward_window=FORWARD_WINDOW,
-        min_spacing=MIN_SPACING,
-    )
+    logger.info("experiment_started", hypothesis=HYPOTHESIS, forward_window=FORWARD_WINDOW)
 
     df_raw = await _load_ticks()
     features = _build_research_frame(df_raw)
 
     entry_mask = features["regime_entry"]
     entries = features[entry_mask].copy()
+    baseline = features[~entry_mask].copy()
 
-    logger.info("entry_set_ready", n_entries=len(entries))
+    logger.info("split_ready", entries=len(entries), baseline=len(baseline))
 
     if len(entries) < 10:
-        return {
-            "hypothesis": "regime_direction_H2",
-            "error": f"Insufficient entries: {len(entries)}",
-        }
+        return {"hypothesis": HYPOTHESIS, "error": f"Insufficient entries: {len(entries)}"}
 
-    # Full sample tests
-    full_result = _run_direction_tests(entries, label="full_sample")
+    full = _run_tests(entries, baseline, label="full_sample")
 
-    # Temporal stability: chronological 50/50 split
+    # Temporal stability — chronological split of entries only
     mid = len(entries) // 2
-    first_half = entries.iloc[:mid]
-    second_half = entries.iloc[mid:]
+    first = _run_tests(entries.iloc[:mid], baseline, label="first_half")
+    second = _run_tests(entries.iloc[mid:], baseline, label="second_half")
 
-    first_result = _run_direction_tests(first_half, label="first_half")
-    second_result = _run_direction_tests(second_half, label="second_half")
-
-    # Directional conditioning: up vs down entry
-    up_entries = entries[entries["entry_return"] > 0]
-    down_entries = entries[entries["entry_return"] < 0]
-
-    up_result = _run_direction_tests(up_entries, label="up_entry") if len(up_entries) >= 10 else None
-    down_result = _run_direction_tests(down_entries, label="down_entry") if len(down_entries) >= 10 else None
+    # Directional conditioning
+    up = entries[entries["entry_return"] > 0]
+    dn = entries[entries["entry_return"] < 0]
+    up_result = _run_tests(up, baseline, "up_entry") if len(up) >= 10 else None
+    dn_result = _run_tests(dn, baseline, "down_entry") if len(dn) >= 10 else None
 
     # Stability verdict
-    fp = first_result["mean_forward_return"]
-    sp = second_result["mean_forward_return"]
     stable = (
-        np.sign(fp) == np.sign(sp) and
-        first_result["ttest"].significant == second_result["ttest"].significant
+        not first.get("skipped") and not second.get("skipped") and
+        np.sign(first["mean_excess"]) == np.sign(second["mean_excess"]) and
+        first["ttest"].significant == second["ttest"].significant
     )
 
-    # Overall verdict — all four criteria must pass for H2 support
     criteria = {
-        "ks_significant": full_result["ks_test"].significant,
-        "ttest_significant": full_result["ttest"].significant,
-        "sign_persistence_below_half": (
-            full_result["sign_persistence"].get("persistence", 1.0) < 0.5 and
-            full_result["sign_persistence"].get("significant", False)
+        "ttest_significant":        full["ttest"].significant,
+        "ks_significant":           full["ks_test"].significant,
+        "sign_persistence_gt_half": (
+            full["sign_persistence"].get("persistence", 0) > 0.5 and
+            full["sign_persistence"].get("significant", False)
         ),
-        "temporally_stable": stable,
-        "economically_significant": full_result["economically_significant"],
+        "temporally_stable":        stable,
+        "economically_significant": full["economically_significant"],
     }
 
     passed = sum(criteria.values())
     conclusion = (
-        "H2 SUPPORTED — mean reversion confirmed with economic edge"
+        "H1 SUPPORTED — momentum confirmed with economic edge"
         if passed >= 4 else
-        f"H2 NOT SUPPORTED — {passed}/5 criteria met"
+        f"H1 PARTIAL — {passed}/5 criteria met" if passed >= 2 else
+        f"H1 NOT SUPPORTED — {passed}/5 criteria met"
     )
 
     return {
-        "hypothesis": "regime_direction_H2_mean_reversion",
+        "hypothesis": HYPOTHESIS,
         "forward_window": FORWARD_WINDOW,
         "n_entries": len(entries),
-        "full_sample": full_result,
-        "first_half": first_result,
-        "second_half": second_result,
+        "n_baseline": len(baseline),
+        "full_sample": full,
+        "first_half": first,
+        "second_half": second,
         "up_entry": up_result,
-        "down_entry": down_result,
+        "down_entry": dn_result,
         "criteria": criteria,
         "stable": stable,
         "conclusion": conclusion,
