@@ -228,3 +228,49 @@ def compute_regime_entries(
             last_entry_pos = pos
 
     return entries
+
+
+def compute_signed_flow(
+    quantity: pd.Series,
+    is_buyer_maker: pd.Series,
+    window: int = 50,
+) -> pd.Series:
+    """
+    Rolling signed volume imbalance over the last N trades.
+
+    signed_volume_t = quantity_t * side_t
+    where:
+        side_t = +1 if buyer is aggressor (is_buyer_maker == False)
+        side_t = -1 if seller is aggressor (is_buyer_maker == True)
+
+    Note on Binance convention:
+        is_buyer_maker == True  → buyer's order was resting (maker)
+                                → seller hit the book → seller aggresses
+                                → sign = -1 (selling pressure)
+        is_buyer_maker == False → seller's order was resting (maker)
+                                → buyer lifted the offer → buyer aggresses
+                                → sign = +1 (buying pressure)
+
+    signed_flow_t = sum(signed_volume) over last N trades
+
+    Positive values: net buying pressure over window.
+    Negative values: net selling pressure over window.
+
+    Normalized by rolling total volume to make comparable
+    across windows with different absolute volume levels.
+    Returns values in [-1, +1].
+
+    First (window - 1) values are NaN by design.
+    No lookahead: uses only past and current trades.
+    """
+    side = is_buyer_maker.apply(lambda x: -1.0 if x else 1.0)
+    signed_vol = quantity * side
+
+    rolling_signed = signed_vol.rolling(window=window).sum()
+    rolling_total = quantity.rolling(window=window).sum()
+
+    normalized = rolling_signed / rolling_total.replace(0, float("nan"))
+    normalized = normalized.replace(
+        [float("inf"), float("-inf")], float("nan")
+    )
+    return normalized
