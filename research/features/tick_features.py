@@ -274,3 +274,96 @@ def compute_signed_flow(
         [float("inf"), float("-inf")], float("nan")
     )
     return normalized
+
+
+def compute_trade_count_imbalance(
+    is_buyer_maker: pd.Series,
+    window: int = 50,
+) -> pd.Series:
+    """
+    Rolling trade count imbalance — not volume weighted.
+
+    imbalance = (n_buyer_aggressed - n_seller_aggressed)
+                / (n_buyer_aggressed + n_seller_aggressed)
+
+    Returns values in [-1, +1].
+    +1: all trades in window are buyer-aggressed
+    -1: all trades in window are seller-aggressed
+     0: perfectly balanced
+
+    Differs from compute_signed_flow in that large trades do not
+    dominate — each trade counts equally regardless of size.
+    This reduces saturation from volume-concentrated bursts.
+
+    Uses same Binance side convention as compute_signed_flow:
+        is_buyer_maker == False → buyer aggresses → +1
+        is_buyer_maker == True  → seller aggresses → -1
+    """
+    side = is_buyer_maker.apply(lambda x: -1.0 if x else 1.0)
+    n_buy = (side == 1).astype(float).rolling(window=window).sum()
+    n_sell = (side == -1).astype(float).rolling(window=window).sum()
+    total = n_buy + n_sell
+    imbalance = (n_buy - n_sell) / total.replace(0, float("nan"))
+    return imbalance.replace([float("inf"), float("-inf")], float("nan"))
+
+
+def compute_flow_zscore(
+    signed_flow: pd.Series,
+    baseline_window: int = 200,
+    min_std: float = 1e-6,
+) -> pd.Series:
+    """
+    Z-score of signed_flow relative to its rolling baseline.
+
+    zscore_t = (flow_t - mean(flow_{t-N:t})) / std(flow_{t-N:t})
+
+    Solves the saturation problem: even when absolute flow is near ±1,
+    the z-score captures deviations from recent equilibrium.
+    A flow of +0.70 during a period where mean is +0.90 produces
+    a negative z-score — buying pressure is weakening relative
+    to recent norm, even though absolute flow is still positive.
+
+    baseline_window: lookback for mean and std estimation.
+                     Must be longer than the flow computation window
+                     to capture meaningful equilibrium.
+                     Recommended: 4x the flow window (200 for flow=50).
+
+    min_std: floor for std to prevent division near zero.
+             Applied when market is in extremely low-activity period.
+
+    First (baseline_window - 1) values are NaN.
+    No lookahead: mean and std use only past observations.
+    """
+    rolling_mean = signed_flow.rolling(window=baseline_window, min_periods=baseline_window).mean()
+    rolling_std = signed_flow.rolling(window=baseline_window, min_periods=baseline_window).std()
+    rolling_std = rolling_std.clip(lower=min_std)
+    zscore = (signed_flow - rolling_mean) / rolling_std
+    return zscore.replace([float("inf"), float("-inf")], float("nan"))
+
+
+def compute_flow_acceleration(
+    signed_flow: pd.Series,
+    lag: int = 10,
+) -> pd.Series:
+    """
+    First difference of signed_flow at a fixed lag.
+
+    acceleration_t = flow_t - flow_{t-lag}
+
+    Measures the rate of change in order flow direction.
+    Positive: buying pressure is increasing (flow moving toward +1)
+    Negative: selling pressure is increasing (flow moving toward -1)
+    Near zero: flow direction is stable
+
+    Dynamic range is good by construction: even in a saturated
+    period (flow near ±1), transitions between same-side and
+    contra-side bursts produce non-zero acceleration.
+
+    lag: number of ticks between current and reference observation.
+         Recommended: same as the flow computation window / 5.
+         At flow_window=50, lag=10 measures change over last 10 trades.
+
+    First (lag) values are NaN.
+    No lookahead: uses only past values via shift(lag).
+    """
+    return signed_flow - signed_flow.shift(lag)
