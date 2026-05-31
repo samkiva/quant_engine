@@ -33,3 +33,8 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.47.0
 websockets==16.0
+scipy==1.15.3
+python-telegram-bot==21.10
+httpx==0.28.1
+httpcore==1.0.9
+certifi==2026.4.22

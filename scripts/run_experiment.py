@@ -12,6 +12,7 @@ EXPERIMENTS = {
     "regime_direction": "research.experiments.regime_direction",
     "order_flow": "research.experiments.order_flow",
     "horizon_sweep": "research.experiments.horizon_sweep",
+    "run_exhaustion": "research.experiments.run_exhaustion",
 }
 
 
@@ -74,6 +75,55 @@ def print_regime_direction(result):
 
 
 
+
+
+def print_run_exhaustion(result):
+    if "error" in result:
+        print("Error: " + str(result["error"]))
+        atr = result.get("attrition", {})
+        for k, v in atr.items():
+            print("  " + k + ": " + str(v))
+        return
+    print("Hypothesis: " + result["hypothesis"])
+    atr = result["attrition"]
+    print("Sample attrition:")
+    print("  raw_terminations:    " + str(atr["n_raw_terminations"]))
+    print("  non_overlapping:     " + str(atr["n_non_overlapping"]))
+    print("  valid_terminations:  " + str(atr["n_valid_terminations"]))
+    print("  mid_run_baseline:    " + str(atr["n_mid_run_baseline"]))
+    print("  attrition_pct:       " + str(atr["attrition_pct"]) + "%")
+    fs = result["full_sample"]
+    print("Full Sample (n=" + str(fs["n_terminations"]) + "):")
+    print("  reversal_rate:         " + str(fs["reversal_rate"]) + "  p=" + str(fs["reversal_p_value"]) + "  sig=" + str(fs["reversal_significant"]))
+    print("  mean_adjusted_return:  " + str(fs["mean_adjusted_return"]))
+    print("  mean_raw_fwd_return:   " + str(fs["mean_raw_forward_return"]))
+    print("  mean_baseline_adj:     " + str(fs["mean_baseline_adjusted"]))
+    rl = fs["run_length_distribution"]
+    print("  run_length: mean=" + str(rl["mean"]) + " median=" + str(rl["median"]) + " p90=" + str(rl["p90"]) + " max=" + str(rl["max"]))
+    if fs["ttest"]:
+        print("  ttest: " + fs["ttest"].interpretation)
+    cm = fs["cost_model_raw"]
+    print("  cost_adj_sharpe: " + str(cm["cost_adjusted_sharpe"]))
+    print("  viable: " + str(cm["economically_viable"]))
+    print("Directional conditioning:")
+    for label, r in result["directional_conditioning"].items():
+        if r.get("skipped"):
+            print("  " + label + ": skipped n=" + str(r["n"]))
+        else:
+            print("  " + label + ": n=" + str(r["n"]) + " reversal_rate=" + str(r["reversal_rate"]) + " mean_adj=" + str(r["mean_adjusted_return"]))
+    pv = result["purged_validation"]
+    print("Purged Validation:")
+    print("  n_windows=" + str(pv.get("n_windows")) + " valid=" + str(pv.get("n_valid_windows")))
+    print("  pass_rate=" + str(pv.get("pass_rate")) + " aggregate_sharpe=" + str(pv.get("aggregate_sharpe")))
+    print("  mean_reversal_rate_across_windows=" + str(pv.get("mean_reversal_rate_across_windows")))
+    st = result["rolling_stability"]
+    print("Rolling Stability:")
+    print("  " + st["sign_persistence"]["summary"])
+    print("  " + st["cost_adjusted"]["summary"])
+    print("Criteria:")
+    for k, v in result["criteria"].items():
+        print(("  PASS  " if v else "  FAIL  ") + k)
+    print("Conclusion: " + result["conclusion"])
 
 def print_horizon_sweep(result):
     if "error" in result:
@@ -144,6 +194,7 @@ PRINTERS = {
     "regime_direction": print_regime_direction,
     "order_flow": print_order_flow,
     "horizon_sweep": print_horizon_sweep,
+    "run_exhaustion": print_run_exhaustion,
 }
 
 

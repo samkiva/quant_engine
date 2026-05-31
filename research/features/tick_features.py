@@ -367,3 +367,32 @@ def compute_flow_acceleration(
     No lookahead: uses only past values via shift(lag).
     """
     return signed_flow - signed_flow.shift(lag)
+
+
+def compute_run_length(
+    is_buyer_maker: pd.Series,
+) -> pd.Series:
+    """
+    Current consecutive same-side streak length at each tick.
+
+    streak_t = number of consecutive trades with the same aggressor
+               side, including tick t itself.
+
+    streak resets to 1 on each side change.
+
+    Uses Binance convention:
+        is_buyer_maker == False → buyer aggresses
+        is_buyer_maker == True  → seller aggresses
+
+    Returns integer Series. No NaN values.
+    No lookahead: computed forward-only.
+    """
+    side = is_buyer_maker.map({False: 1, True: -1}).astype(float)
+    streak = np.ones(len(side), dtype=int)
+    side_arr = side.values
+
+    for i in range(1, len(side_arr)):
+        if side_arr[i] == side_arr[i - 1]:
+            streak[i] = streak[i - 1] + 1
+
+    return pd.Series(streak, index=is_buyer_maker.index, dtype=int)

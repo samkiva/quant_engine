@@ -16,6 +16,8 @@ class MainnetTradeHandler:
     All persistence goes through the async write queue.
     """
 
+    SAMPLE_EVERY: int = 5  # Store 1 in every N ticks
+
     def __init__(self) -> None:
         self._count: int = 0
 
@@ -23,6 +25,9 @@ class MainnetTradeHandler:
         try:
             event = TradeEvent.from_binance_message(raw_message)
             self._count += 1
+
+            if self._count % self.SAMPLE_EVERY != 0:
+                return
 
             enqueue("mainnet_trade", {
                 "trade_id": event.trade_id,
